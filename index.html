@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <style>
+    body { margin: 0; padding: 0; background-color: transparent; overflow: hidden; font-family: sans-serif; }
+    #chartdiv { width: 100vw; height: 100vh; }
+    
+    /* Centered Country Name Toast */
+    #countryName { 
+      position: absolute; bottom: 12%; left: 50%; transform: translateX(-50%); 
+      color: white; font-size: 26px; background: rgba(0,0,0,0.85); 
+      padding: 15px 25px; border-radius: 12px; display: none; 
+      pointer-events: none; text-align: center; border: 1px solid #555; 
+      box-shadow: 0 4px 6px rgba(0,0,0,0.5); white-space: nowrap; z-index: 10; 
+    }
+    
+    /* Top Left Control Buttons */
+    .controls {
+      position: absolute; top: 10px; left: 60px; display: flex; flex-direction: column; gap: 6px; z-index: 10;
+    }
+    .btn { 
+      background: rgba(0,0,0,0.6); color: white; padding: 7px 7px; border-radius: 20px; 
+      font-size: 12px; cursor: pointer; border: 1px solid #555; text-align: center; 
+      backdrop-filter: blur(4px); box-shadow: 0 2px 4px rgba(0,0,0,0.3); transition: 0.3s;
+      user-select: none;
+    }
+    .btn:active {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    /* Bottom Right Close Button */
+    .btn-close {
+      position: absolute;
+      bottom: 10px;
+      right: 60px;
+      z-index: 10;
+      min-width: 42px;
+    }
+  </style>
+  <script src="https://cdn.amcharts.com/lib/5/index.js"></script>
+  <script src="https://cdn.amcharts.com/lib/5/map.js"></script>
+  <script src="https://cdn.amcharts.com/lib/5/geodata/worldLow.js"></script>
+  <script src="https://cdn.amcharts.com/lib/5/themes/Animated.js"></script>
+</head>
+<body>
+  <div id="chartdiv"></div>
+  <div id="countryName"></div>
+  
+  <!-- Top Controls -->
+  <div class="controls">
+    <div class="btn" onclick="resumeRotation()">Spin</div>
+    <div class="btn" id="nightBtn" onclick="toggleNight()">Shadow</div>
+  </div>
+
+  <!-- Bottom Right Close Button -->
+  <div class="btn btn-close" onclick="closeScene()">Close</div>
+
+  <script>
+    // Global function to trigger the close command to Tasker
+    window.closeScene = function() {
+      try {
+        if (typeof Tasker !== 'undefined' && Tasker.sendCommand) {
+          Tasker.sendCommand({ command: "GlobeClose" });
+        }
+      } catch(e) {
+        console.error("JS Bridge failed", e);
+      }
+    };
+
+    am5.ready(function() {
+      var root = am5.Root.new("chartdiv");
+      root.setThemes([ am5themes_Animated.new(root) ]);
+
+      var chart = root.container.children.push(am5map.MapChart.new(root, {
+        panX: "rotateX",
+        panY: "rotateY",
+        projection: am5map.geoOrthographic(),
+        paddingBottom: 20, paddingTop: 20, paddingLeft: 20, paddingRight: 20
+      }));
+
+      // Background Ocean
+      var backgroundSeries = chart.series.push(am5map.MapPolygonSeries.new(root, {}));
+      backgroundSeries.mapPolygons.template.setAll({
+        fill: am5.color(0x2b59a1),
+        fillOpacity: 0.85,
+        strokeOpacity: 0
+      });
+      backgroundSeries.data.push({ geometry: am5map.getGeoRectangle(90, 180, -90, -180) });
+
+      // Landmass Polygons
+      var polygonSeries = chart.series.push(am5map.MapPolygonSeries.new(root, {
+        geoJSON: am5geodata_worldLow
+      }));
+      polygonSeries.mapPolygons.template.setAll({
+        fill: am5.color(0x3bb273),
+        fillOpacity: 0.9,
+        strokeWidth: 0.5,
+        stroke: am5.color(0x1a2639),
+        interactive: true
+      });
+      polygonSeries.mapPolygons.template.states.create("hover", {
+        fill: am5.color(0x4aed96)
+      });
+
+      // Day/Night Shadow Overlay Setup
+      var nightSeries = chart.series.push(am5map.MapPolygonSeries.new(root, {}));
+      nightSeries.mapPolygons.template.setAll({
+        fill: am5.color(0x000000),
+        fillOpacity: 0, // Starts invisible
+        strokeOpacity: 0,
+        interactive: false
+      });
+
+      // Calculates accurate sun position using the Equation of Time & constructs a twilight gradient
+      function updateNightPosition() {
+        var now = new Date();
+        var start = new Date(Date.UTC(now.getUTCFullYear(), 0, 0));
+        var diff = now.getTime() - start.getTime();
+        var dayOfYear = Math.floor(diff / (1000 * 60 * 60 * 24));
+        
+        // Fractional year in radians
+        var gamma = (2 * Math.PI / 365) * (dayOfYear - 1 + (now.getUTCHours() - 12) / 24);
+        
+        // Equation of Time (in minutes)
+        var eqTime = 229.18 * (
+          0.000075 + 
+          0.001868 * Math.cos(gamma) - 
+          0.032077 * Math.sin(gamma) - 
+          0.014615 * Math.cos(2 * gamma) - 
+          0.040849 * Math.sin(2 * gamma)
+        );
+        
+        // Solar Declination (in radians)
+        var decl = 0.006918 - 
+          0.399912 * Math.cos(gamma) + 
+          0.070257 * Math.sin(gamma) - 
+          0.006758 * Math.cos(2 * gamma) + 
+          0.000907 * Math.sin(2 * gamma) - 
+          0.002697 * Math.cos(3 * gamma) + 
+          0.00148 * Math.sin(3 * gamma);
+        
+        var sunLat = decl * (180 / Math.PI);
+        
+        // True Solar Time & Longitude
+        var trueSolarTime = (now.getUTCHours() * 60) + now.getUTCMinutes() + (now.getUTCSeconds() / 60) + eqTime;
+        var sunLng = 180 - (trueSolarTime / 4);
+        
+        // Normalize coordinates
+        while (sunLng > 180) sunLng -= 360;
+        while (sunLng < -180) sunLng += 360;
+        
+        var nightLat = -sunLat;
+        var nightLng = sunLng + 180;
+        if (nightLng > 180) nightLng -= 360;
+        
+        // Stack 4 diminishing radii from the anti-solar point to create a gradient
+        nightSeries.data.setAll([
+          { geometry: am5map.getGeoCircle({ latitude: nightLat, longitude: nightLng }, 90) },
+          { geometry: am5map.getGeoCircle({ latitude: nightLat, longitude: nightLng }, 84) },
+          { geometry: am5map.getGeoCircle({ latitude: nightLat, longitude: nightLng }, 78) },
+          { geometry: am5map.getGeoCircle({ latitude: nightLat, longitude: nightLng }, 72) }
+        ]);
+      }
+      updateNightPosition();
+
+      // Interactions & Passing Data to Tasker
+      polygonSeries.mapPolygons.template.events.on("click", function(ev) {
+        var name = ev.target.dataItem.dataContext.name;
+        
+        // Show Toast Label
+        var label = document.getElementById('countryName');
+        label.innerText = name;
+        label.style.display = 'block';
+        if (window.labelTimeout) clearTimeout(window.labelTimeout);
+        window.labelTimeout = setTimeout(() => { label.style.display = 'none'; }, 3000);
+
+        // Native Scenes V2 JS Bridge Command
+        try {
+          if (typeof Tasker !== 'undefined' && Tasker.sendCommand) {
+            Tasker.sendCommand({ command: "GlobeCountry=:=" + name });
+          }
+        } catch(e) { console.error("JS Bridge failed", e); }
+      });
+
+      // Rotation Animation Logic
+      var rotationAnimation;
+      window.startRotation = function() {
+        if (rotationAnimation) rotationAnimation.stop();
+        var currentRotation = chart.get("rotationX") || 0;
+        rotationAnimation = chart.animate({
+          key: "rotationX",
+          from: currentRotation,
+          to: currentRotation + 360,
+          duration: 30000,
+          loops: Infinity
+        });
+      };
+      
+      window.resumeRotation = function() {
+        startRotation();
+      };
+
+      // Stop auto-rotation when the user manually drags the canvas
+      chart.chartContainer.events.on("pointerdown", function() {
+        if (rotationAnimation) rotationAnimation.stop();
+      });
+
+      // Shadow Button Toggle Logic
+      window.nightVisible = false;
+      window.toggleNight = function() {
+        nightVisible = !nightVisible;
+        
+        var targetOpacity = nightVisible ? 0.18 : 0;
+        
+        if (nightVisible) updateNightPosition(); 
+
+        setTimeout(function() {
+          nightSeries.mapPolygons.each(function(polygon) {
+            polygon.animate({
+              key: "fillOpacity",
+              to: targetOpacity,
+              duration: 500
+            });
+          });
+        }, 50);
+
+        document.getElementById("nightBtn").style.background = nightVisible ? "rgba(77, 204, 136, 0.9)" : "rgba(0,0,0,0.6)";
+      };
+
+      // Start the sequence once the map loads
+      chart.appear(1000, 100).then(function() {
+        startRotation();
+      });
+    });
+  </script>
+</body>
+</html>
